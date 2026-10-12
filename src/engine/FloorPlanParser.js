@@ -103,6 +103,31 @@ export const PRESET_BLUEPRINTS = [
     floorPolygons: [
       [[-2.7, -2.3], [2.7, -2.3], [2.7, 2.3], [-2.7, 2.3]]
     ]
+  },
+  {
+    id: 'hand-drawn-sketch',
+    name: '毛坯现场手绘实测草图 (6.5m × 5.2m · 约 33.8㎡)',
+    description: '模拟毛坯房现场手绘测量的开间草图，含大开间生活起居区、独立卫浴与南向景观阳台。',
+    targetWidthMeters: 6.5,
+    targetDepthMeters: 5.2,
+    wallHeightMeters: 2.8,
+    rooms: [
+      { id: 'living', name: '起居主生活区', areaM2: 24.5, center: [0.5, 0.2] },
+      { id: 'bath', name: '独立干湿卫浴', areaM2: 5.8, center: [-2.0, -1.2] }
+    ],
+    walls: [
+      { start: [-3.25, -2.6], end: [3.25, -2.6], thickness: 0.24, isExterior: true, openings: [{ type: 'window', offset: 2.2, width: 2.8, sillHeight: 0.45, height: 1.9 }] },
+      { start: [3.25, -2.6], end: [3.25, 2.6], thickness: 0.24, isExterior: true },
+      { start: [3.25, 2.6], end: [-3.25, 2.6], thickness: 0.24, isExterior: true, openings: [{ type: 'door', offset: 1.2, width: 0.95, height: 2.1 }] },
+      { start: [-3.25, 2.6], end: [-3.25, -2.6], thickness: 0.24, isExterior: true },
+
+      // 卫浴隔墙
+      { start: [-1.2, -2.6], end: [-1.2, 0.2], thickness: 0.16, isExterior: false },
+      { start: [-1.2, 0.2], end: [-3.25, 0.2], thickness: 0.16, isExterior: false, openings: [{ type: 'door', offset: 0.4, width: 0.85, height: 2.0 }] }
+    ],
+    floorPolygons: [
+      [[-3.25, -2.6], [3.25, -2.6], [3.25, 2.6], [-3.25, 2.6]]
+    ]
   }
 ];
 

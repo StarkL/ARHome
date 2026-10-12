@@ -12,9 +12,47 @@ import {
   Image as ImageIcon,
   Sliders,
   Maximize2,
-  AlertCircle
+  AlertCircle,
+  Download,
+  Zap
 } from 'lucide-react';
 import { PRESET_BLUEPRINTS, renderBlueprintCanvas, parseFloorPlanImage } from '../engine/FloorPlanParser';
+
+// 官方预置测试图纸样张库
+const SAMPLE_TEST_BLUEPRINTS = [
+  {
+    id: 'two-bedroom-suite',
+    name: '01_两室一厅经典户型_施工放线图',
+    subTitle: '8.4m × 7.2m · 约 60.5㎡',
+    fileName: '01_两室一厅经典户型_施工放线图.png',
+    width: 8.4,
+    desc: '全景客餐厅 + 南向主卧 + 次卧/书房，含门洞通道与落地采光大飘窗'
+  },
+  {
+    id: 'l-shaped-loft',
+    name: '02_L型大开间客餐厅_户型平面图',
+    subTitle: '7.6m × 6.0m · 约 45.6㎡',
+    fileName: '02_L型大开间客餐厅_户型平面图.png',
+    width: 7.6,
+    desc: 'L型通透大开间客餐厨一体，开阔动线与转角长岛台'
+  },
+  {
+    id: 'master-bedroom-suite',
+    name: '03_豪华南向大主卧套间_建筑图',
+    subTitle: '5.4m × 4.6m · 约 24.8㎡',
+    fileName: '03_豪华南向大主卧套间_建筑图.png',
+    width: 5.4,
+    desc: '标准主卧套房，含床位就寝区、步入式衣帽间隔墙与大飘窗'
+  },
+  {
+    id: 'hand-drawn-sketch',
+    name: '04_毛坯现场手绘实测草图',
+    subTitle: '6.5m × 5.2m · 约 33.8㎡',
+    fileName: '04_毛坯现场手绘实测草图.png',
+    width: 6.5,
+    desc: '模拟现场实测手绘黑白墨线草图，测试草图抗噪与自适应识别'
+  }
+];
 
 export function FloorPlanImportModal({
   isOpen,
@@ -61,6 +99,49 @@ export function FloorPlanImportModal({
     }
   }, [activeTab, selectedPresetId]);
 
+  // 在预览 Canvas 上叠加绘制识别到的墙体骨骼与红绿标记
+  const drawDetectionResult = (img, plan, wMeters) => {
+    if (!uploadCanvasRef.current || !img || !plan) return;
+    const cvs = uploadCanvasRef.current;
+    cvs.width = 600;
+    cvs.height = Math.round(600 * (img.height / img.width));
+    const ctx = cvs.getContext('2d');
+    ctx.drawImage(img, 0, 0, cvs.width, cvs.height);
+
+    // 绿色高亮绘制识别提取出的墙体线段
+    ctx.strokeStyle = '#22c55e';
+    ctx.lineWidth = 4;
+    const scale = cvs.width / wMeters;
+    const cx = cvs.width / 2;
+    const cy = cvs.height / 2;
+
+    plan.walls.forEach(w => {
+      const x1 = cx + w.start[0] * scale;
+      const y1 = cy + w.start[1] * scale;
+      const x2 = cx + w.end[0] * scale;
+      const y2 = cy + w.end[1] * scale;
+
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      // 端点红圈
+      ctx.fillStyle = '#ef4444';
+      ctx.beginPath();
+      ctx.arc(x1, y1, 4, 0, Math.PI * 2);
+      ctx.arc(x2, y2, 4, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  };
+
+  // 保证 Canvas 挂载后及时重绘 CV 标记
+  useEffect(() => {
+    if (uploadedImage && parsedCustomPlan) {
+      drawDetectionResult(uploadedImage, parsedCustomPlan, targetWidth);
+    }
+  }, [uploadedImage, parsedCustomPlan, targetWidth]);
+
   // 触发图片自动 CV 解析
   const runAutoDetection = async (img, wMeters, thresh) => {
     setIsProcessing(true);
@@ -71,41 +152,6 @@ export function FloorPlanImportModal({
         wallHeightMeters: wallHeight
       });
       setParsedCustomPlan(plan);
-
-      // 在预览 Canvas 上叠加绘制识别到的墙体骨骼与红绿标记
-      if (uploadCanvasRef.current) {
-        const cvs = uploadCanvasRef.current;
-        cvs.width = 600;
-        cvs.height = Math.round(600 * (img.height / img.width));
-        const ctx = cvs.getContext('2d');
-        ctx.drawImage(img, 0, 0, cvs.width, cvs.height);
-
-        // 绿色高亮绘制识别提取出的墙体线段
-        ctx.strokeStyle = '#22c55e';
-        ctx.lineWidth = 4;
-        const scale = cvs.width / wMeters;
-        const cx = cvs.width / 2;
-        const cy = cvs.height / 2;
-
-        plan.walls.forEach(w => {
-          const x1 = cx + w.start[0] * scale;
-          const y1 = cy + w.start[1] * scale;
-          const x2 = cx + w.end[0] * scale;
-          const y2 = cy + w.end[1] * scale;
-
-          ctx.beginPath();
-          ctx.moveTo(x1, y1);
-          ctx.lineTo(x2, y2);
-          ctx.stroke();
-
-          // 端点红圈
-          ctx.fillStyle = '#ef4444';
-          ctx.beginPath();
-          ctx.arc(x1, y1, 4, 0, Math.PI * 2);
-          ctx.arc(x2, y2, 4, 0, Math.PI * 2);
-          ctx.fill();
-        });
-      }
     } catch (err) {
       console.error('Auto detection failed:', err);
     } finally {
@@ -130,15 +176,54 @@ export function FloorPlanImportModal({
     reader.readAsDataURL(file);
   };
 
-  // 载入演示样张
-  const handleLoadSampleDrawing = () => {
-    // 从预设生成高质量真实工程图作为上传样本，测试识别算法
-    const sample = PRESET_BLUEPRINTS[0];
-    const cvs = renderBlueprintCanvas(sample, { width: 800, height: 600, theme: 'cad_light' });
+  // 下载当前选中的预置施工图纸
+  const handleDownloadCurrentPreset = () => {
+    const preset = PRESET_BLUEPRINTS.find(p => p.id === selectedPresetId);
+    if (!preset) return;
+    const cvs = renderBlueprintCanvas(preset, { 
+      width: 1600, 
+      height: Math.round(1600 * (preset.targetDepthMeters / preset.targetWidthMeters)), 
+      theme: 'cad_light' 
+    });
+    const a = document.createElement('a');
+    a.href = cvs.toDataURL('image/png');
+    a.download = `${preset.name}_施工放线图.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  // 下载指定测试图纸样张 PNG
+  const handleDownloadSample = (sample) => {
+    const preset = PRESET_BLUEPRINTS.find(p => p.id === sample.id);
+    if (!preset) return;
+    const cvs = renderBlueprintCanvas(preset, { 
+      width: 1600, 
+      height: Math.round(1600 * (preset.targetDepthMeters / preset.targetWidthMeters)), 
+      theme: 'cad_light' 
+    });
+    const a = document.createElement('a');
+    a.href = cvs.toDataURL('image/png');
+    a.download = sample.fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  // 载入特定测试样张进入 CV 检测流
+  const handleLoadSpecificSample = (sample) => {
+    const preset = PRESET_BLUEPRINTS.find(p => p.id === sample.id);
+    if (!preset) return;
+    const cvs = renderBlueprintCanvas(preset, { 
+      width: 800, 
+      height: Math.round(800 * (preset.targetDepthMeters / preset.targetWidthMeters)), 
+      theme: 'cad_light' 
+    });
     const img = new Image();
     img.onload = () => {
       setUploadedImage(img);
-      runAutoDetection(img, sample.targetWidthMeters, threshold);
+      setTargetWidth(preset.targetWidthMeters);
+      runAutoDetection(img, preset.targetWidthMeters, threshold);
     };
     img.src = cvs.toDataURL();
   };
@@ -276,9 +361,19 @@ export function FloorPlanImportModal({
                   <span className="text-xs font-semibold text-slate-400">
                     📐 1:1 施工放线矢量图纸预览:
                   </span>
-                  <span className="text-xs text-cyan-400 font-mono">
-                    开间 {currentPreset?.targetWidthMeters}m · 进深 {currentPreset?.targetDepthMeters}m
-                  </span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-cyan-400 font-mono">
+                      开间 {currentPreset?.targetWidthMeters}m · 进深 {currentPreset?.targetDepthMeters}m
+                    </span>
+                    <button
+                      onClick={handleDownloadCurrentPreset}
+                      className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[11px] border border-slate-700 flex items-center gap-1.5 transition-colors shadow-sm"
+                      title="下载此施工放线图 PNG 到本地"
+                    >
+                      <Download className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>下载图纸 PNG</span>
+                    </button>
+                  </div>
                 </div>
                 <div className="flex-1 bg-slate-900/90 rounded-xl border border-slate-800 p-2 flex items-center justify-center overflow-hidden min-h-[300px]">
                   <canvas 
@@ -292,39 +387,92 @@ export function FloorPlanImportModal({
             /* TAB 2: 本地上传与算法识别 */
             <div className="space-y-6">
               {!uploadedImage ? (
-                /* 上传拖拽盒 */
-                <div className="border-2 border-dashed border-slate-700 hover:border-cyan-500 rounded-2xl p-8 text-center bg-slate-900/40 transition-all flex flex-col items-center justify-center">
-                  <div className="w-14 h-14 rounded-2xl bg-cyan-950 border border-cyan-800/80 flex items-center justify-center mb-3">
-                    <ImageIcon className="w-7 h-7 text-cyan-400" />
+                /* 上传拖拽盒 + 官方实测图纸样张库 */
+                <div className="space-y-5">
+                  {/* 上传拖拽区 */}
+                  <div className="border-2 border-dashed border-slate-700 hover:border-cyan-500 rounded-2xl p-6 text-center bg-slate-900/40 transition-all flex flex-col items-center justify-center">
+                    <div className="w-12 h-12 rounded-2xl bg-cyan-950 border border-cyan-800/80 flex items-center justify-center mb-2">
+                      <ImageIcon className="w-6 h-6 text-cyan-400" />
+                    </div>
+                    <h4 className="font-bold text-white text-sm mb-1">拖拽或点击上传本地户型图纸</h4>
+                    <p className="text-xs text-slate-400 max-w-md mb-3">
+                      支持地产户型图、施工图、CAD 导出的 PNG/JPG 或手机拍摄的毛坯房地面草图
+                    </p>
+                    
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-medium text-xs shadow-md transition-colors flex items-center gap-2"
+                      >
+                        <Upload className="w-4 h-4" />
+                        <span>选择本地图纸文件</span>
+                      </button>
+                      <span className="text-xs text-slate-500">或直接使用下方测试图纸库 👇</span>
+                    </div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/png, image/jpeg, image/webp"
+                      className="hidden"
+                      onChange={handleFileUpload}
+                    />
                   </div>
-                  <h4 className="font-bold text-white text-base mb-1">拖拽或点击上传户型图纸</h4>
-                  <p className="text-xs text-slate-400 max-w-md mb-4">
-                    支持地产户型图、设计施工图、CAD 导出的 PNG/JPG 或手机拍摄的毛坯房地面草图
-                  </p>
-                  
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={() => fileInputRef.current?.click()}
-                      className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-medium text-xs shadow-md transition-colors flex items-center gap-2"
-                    >
-                      <Upload className="w-4 h-4" />
-                      <span>选择本地图纸文件</span>
-                    </button>
-                    <button
-                      onClick={handleLoadSampleDrawing}
-                      className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs transition-colors flex items-center gap-2"
-                    >
-                      <Sparkles className="w-4 h-4 text-amber-400" />
-                      <span>载入测试样张演示</span>
-                    </button>
+
+                  {/* 官方测试图纸样张库卡片 */}
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
+                        <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                          📁 官方实测图纸样张库 (即开即测)
+                        </h4>
+                      </div>
+                      <span className="text-[11px] text-slate-400">
+                        支持「一键填入识别」或「下载到电脑/手机体验真实拖拽上传」
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {SAMPLE_TEST_BLUEPRINTS.map((sample) => (
+                        <div
+                          key={sample.id}
+                          className="bg-slate-900/80 border border-slate-800 hover:border-slate-700 rounded-xl p-3.5 flex flex-col justify-between transition-all hover:bg-slate-900 shadow-sm"
+                        >
+                          <div>
+                            <div className="flex items-start justify-between gap-2 mb-1.5">
+                              <h5 className="font-semibold text-xs text-white leading-tight">
+                                {sample.name.replace(/^[0-9]+_/, '')}
+                              </h5>
+                              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 whitespace-nowrap">
+                                {sample.subTitle}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-400 leading-relaxed mb-3">
+                              {sample.desc}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-2 pt-2 border-t border-slate-800/80">
+                            <button
+                              onClick={() => handleLoadSpecificSample(sample)}
+                              className="flex-1 py-1.5 px-2.5 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/40 hover:border-cyan-400 text-[11px] font-medium flex items-center justify-center gap-1.5 transition-colors"
+                            >
+                              <Zap className="w-3.5 h-3.5 text-cyan-400" />
+                              <span>⚡ 一键填入实测</span>
+                            </button>
+                            <button
+                              onClick={() => handleDownloadSample(sample)}
+                              className="py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-[11px] font-medium flex items-center justify-center gap-1.5 transition-colors"
+                              title="下载图纸PNG到电脑或手机"
+                            >
+                              <Download className="w-3.5 h-3.5 text-slate-400" />
+                              <span>📥 下载PNG</span>
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/png, image/jpeg, image/webp"
-                    className="hidden"
-                    onChange={handleFileUpload}
-                  />
                 </div>
               ) : (
                 /* 已上传图片与算法微调调控台 */
