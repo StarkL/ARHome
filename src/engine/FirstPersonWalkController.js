@@ -254,6 +254,54 @@ export class FirstPersonWalkController {
           }
         }
 
+        // 3. 检测内墙隔断碰撞 (Interior Wall Segments & Openings)
+        if (canMove && bounds && Array.isArray(bounds.wallSegments) && bounds.wallSegments.length > 0) {
+          for (const wall of bounds.wallSegments) {
+            if (wall.isExterior) continue; // 外墙已由 bounds.min/max 处理
+            const x1 = wall.start[0], z1 = wall.start[1];
+            const x2 = wall.end[0], z2 = wall.end[1];
+            const dx = x2 - x1, dz = z2 - z1;
+            const lenSq = dx * dx + dz * dz;
+            if (lenSq < 0.001) continue;
+
+            const len = Math.sqrt(lenSq);
+            // 投影计算
+            const u = Math.max(0, Math.min(1, ((testCandidate.x - x1) * dx + (testCandidate.z - z1) * dz) / lenSq));
+            const distAlong = u * len;
+
+            // 检查是否走在门洞/通道范围内 (若是门洞，则允许通行)
+            let inOpening = false;
+            if (wall.openings) {
+              for (const op of wall.openings) {
+                if (distAlong >= (op.offset || 0) && distAlong <= (op.offset || 0) + (op.width || 0.9)) {
+                  inOpening = true;
+                  break;
+                }
+              }
+            }
+            if (inOpening) continue;
+
+            const closestX = x1 + u * dx;
+            const closestZ = z1 + u * dz;
+            const newDistSq = (testCandidate.x - closestX) ** 2 + (testCandidate.z - closestZ) ** 2;
+            const wallThick = wall.thickness || 0.2;
+            const limitDistSq = (this.bodyRadius + wallThick / 2) ** 2;
+
+            if (newDistSq < limitDistSq) {
+              // 逃逸法则
+              const curU = Math.max(0, Math.min(1, ((this.position.x - x1) * dx + (this.position.z - z1) * dz) / lenSq));
+              const curClosestX = x1 + curU * dx;
+              const curClosestZ = z1 + curU * dz;
+              const curDistSq = (this.position.x - curClosestX) ** 2 + (this.position.z - curClosestZ) ** 2;
+              if (newDistSq < curDistSq - 0.0001) {
+                // 正在钻入内隔墙，阻挡移动
+                canMove = false;
+                break;
+              }
+            }
+          }
+        }
+
         if (canMove) {
           this.position[axis] = nextPos;
         }

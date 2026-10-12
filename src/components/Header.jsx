@@ -10,7 +10,8 @@ import {
   FileDown, 
   Camera, 
   FolderOpen,
-  HelpCircle
+  HelpCircle,
+  FileText
 } from 'lucide-react';
 import { SAMPLE_PRESETS } from '../data/samplePresets';
 
@@ -22,6 +23,7 @@ export function Header({
   isLidarScanActive,
   setIsLidarScanActive,
   onOpenRoomSettings,
+  onOpenFloorPlanModal,
   onOpenBOM,
   onLoadPreset,
   onTakeScreenshot,
@@ -111,6 +113,16 @@ export function Header({
             ))}
           </div>
         </div>
+
+        {/* 导入户型图纸自动解析 */}
+        <button
+          onClick={onOpenFloorPlanModal}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-700 text-indigo-200 transition-colors shadow-sm"
+          title="导入 2D 户型图纸或草图，自动解析并生成 1:1 三维房间场景"
+        >
+          <FileText className="w-3.5 h-3.5 text-indigo-400" />
+          <span className="hidden sm:inline font-medium">导入图纸</span>
+        </button>
 
         {/* 毛坯房参数设置 */}
         <button

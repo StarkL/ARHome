@@ -62,7 +62,10 @@ function createProceduralConcreteTexture(isFloor = false) {
 
 /**
  * 房间构建器 (RoomBuilder)
- * 渲染真实的毛坯房几何空间，包括水泥地面、立柱、横梁、落地采光窗和门洞
+ * 渲染真实的毛坯房几何空间，支持：
+ * 1. 基础单矩形参数化毛坯房
+ * 2. 户型图纸自动解析生成的多房间、任意转角与内隔墙 1:1 三维毛坯场景
+ * 3. 3D 地面工程图纸半透明投影对照层 (Blueprint Floor Overlay)
  */
 export class RoomBuilder {
   constructor(scene) {
@@ -78,20 +81,28 @@ export class RoomBuilder {
     this.scanGridGroup.name = 'lidar-scan-grid';
     this.scene.add(this.scanGridGroup);
 
+    this.southWalls = [];
+    this.ceilings = [];
+    this.beams = [];
+    this.blueprintOverlayMesh = null;
+    this.isBlueprintOverlayVisible = true;
+    this.blueprintOverlayOpacity = 0.65;
+
     this.currentConfig = {
       width: 5.0,
       depth: 4.2,
       height: 2.8,
       wallFinish: 'concrete', // 'concrete' | 'skimcoat'
-      windowWall: 'north'
+      windowWall: 'north',
+      floorPlan: null
     };
   }
 
   build(config = {}) {
     this.currentConfig = { ...this.currentConfig, ...config };
-    const { width, depth, height, wallFinish } = this.currentConfig;
+    const { wallFinish, floorPlan } = this.currentConfig;
 
-    // 清理旧网格
+    // 清理旧网格与元素引用
     while (this.roomGroup.children.length > 0) {
       const obj = this.roomGroup.children[0];
       this.roomGroup.remove(obj);
@@ -102,11 +113,12 @@ export class RoomBuilder {
       }
     }
 
-    // 设置贴图平铺重复次数 (每米重复一次)
-    this.floorTexture.repeat.set(width, depth);
-    this.wallTexture.repeat.set(Math.max(width, depth), height);
+    this.southWalls = [];
+    this.ceilings = [];
+    this.beams = [];
+    this.blueprintOverlayMesh = null;
 
-    // 材质
+    // 材质准备
     const isSkimCoat = wallFinish === 'skimcoat';
     const floorColor = '#737373';
     const wallColor = isSkimCoat ? '#f1f5f9' : '#888888';
@@ -132,7 +144,238 @@ export class RoomBuilder {
       side: THREE.DoubleSide
     });
 
-    // 1. 水泥地面 (接收所有真实阴影)
+    // 核心分支：如果是图纸驱动的多房间场景 (Floor Plan Mode)
+    if (floorPlan && Array.isArray(floorPlan.walls) && floorPlan.walls.length > 0) {
+      this._buildFromFloorPlan(floorPlan, wallFinish, floorMat, wallMat, ceilingMat);
+    } else {
+      // 常规单房间参数化构建 (Legacy Box Mode)
+      this._buildBoxRoom(floorMat, wallMat, ceilingMat);
+    }
+
+    // 初始应用当前模式的顶板/南墙可见性
+    if (this.currentViewMode) {
+      this.setViewMode(this.currentViewMode);
+    }
+  }
+
+  /**
+   * 基于户型图纸矢量数据构建 1:1 三维房间场景 (Extruded Floor Plan Scene)
+   */
+  _buildFromFloorPlan(floorPlan, wallFinish, floorMat, wallMat, ceilingMat) {
+    const w = floorPlan.targetWidthMeters || this.currentConfig.width;
+    const d = floorPlan.targetDepthMeters || this.currentConfig.depth;
+    const h = floorPlan.wallHeightMeters || this.currentConfig.height;
+
+    this.floorTexture.repeat.set(Math.max(w, 4), Math.max(d, 4));
+    this.wallTexture.repeat.set(Math.max(w, d), h);
+
+    // 1. 建造地面
+    const floorGeom = new THREE.PlaneGeometry(w, d);
+    const floor = new THREE.Mesh(floorGeom, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(0, 0, 0);
+    floor.receiveShadow = true;
+    floor.userData = { isFloor: true };
+    this.roomGroup.add(floor);
+
+    // 2. 建造天花板 (全景设计模式下隐藏)
+    const ceilingGeom = new THREE.PlaneGeometry(w, d);
+    const ceiling = new THREE.Mesh(ceilingGeom, ceilingMat);
+    ceiling.rotation.x = Math.PI / 2;
+    ceiling.position.set(0, h, 0);
+    ceiling.receiveShadow = true;
+    this.ceilings.push(ceiling);
+    this.roomGroup.add(ceiling);
+
+    // 3. 地面图纸投影对照层 (Blueprint Floor Projection Overlay)
+    if (floorPlan.overlayImage || floorPlan.blueprintCanvas) {
+      this._buildBlueprintOverlay(floorPlan, w, d);
+    }
+
+    // 4. 逐一构建墙体线段 (支持门洞、窗洞、开间内隔墙)
+    floorPlan.walls.forEach(wall => {
+      this._buildWallSegment(wall, h, wallMat);
+    });
+
+    // 5. 自然采光城市天际线远景
+    this._buildOutdoorBackdrop(w, d, h);
+
+    // 6. LiDAR 空间扫描点阵
+    this._buildLidarScanMesh(w, d, h);
+  }
+
+  /**
+   * 构建单段墙体 (带开洞与玻璃框处理)
+   */
+  _buildWallSegment(wall, totalH, wallMat) {
+    const x1 = wall.start[0];
+    const z1 = wall.start[1];
+    const x2 = wall.end[0];
+    const z2 = wall.end[1];
+    const thickness = wall.thickness || 0.2;
+
+    const dx = x2 - x1;
+    const dz = z2 - z1;
+    const length = Math.hypot(dx, dz);
+    if (length < 0.05) return;
+
+    const angle = Math.atan2(dz, dx);
+    const midX = (x1 + x2) / 2;
+    const midZ = (z1 + z2) / 2;
+
+    // 判断是否为南面外墙 (在设计视角下剖切隐藏以便观察)
+    const isSouthWall = wall.isExterior && Math.abs(midZ - (this.currentConfig.depth || 4) / 2) < 0.8;
+
+    // 玻璃与窗框材质
+    const frameMat = new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.3, metalness: 0.8 });
+    const glassMat = new THREE.MeshPhysicalMaterial({
+      color: '#ffffff',
+      transmission: 0.9,
+      opacity: 1,
+      transparent: true,
+      roughness: 0.1,
+      ior: 1.5
+    });
+
+    // 如果墙体包含门窗开洞 (Openings)
+    if (wall.openings && wall.openings.length > 0) {
+      wall.openings.forEach(op => {
+        const opOffset = op.offset || 0;
+        const opWidth = Math.min(op.width || 1.8, length * 0.9);
+        const opH = op.height || 1.8;
+        const sillH = op.type === 'window' ? (op.sillHeight || 0.5) : 0;
+        const topH = Math.max(0.1, totalH - (sillH + opH));
+
+        // 墙体拆分为局部 Group 并统一旋转
+        const wallGroup = new THREE.Group();
+        wallGroup.position.set(x1, 0, z1);
+        wallGroup.rotation.y = -angle;
+
+        // A. 开洞前段实体墙
+        if (opOffset > 0.05) {
+          const preGeom = new THREE.BoxGeometry(opOffset, totalH, thickness);
+          const preMesh = new THREE.Mesh(preGeom, wallMat);
+          preMesh.position.set(opOffset / 2, totalH / 2, 0);
+          preMesh.receiveShadow = true;
+          preMesh.castShadow = true;
+          wallGroup.add(preMesh);
+        }
+
+        // B. 开洞后段实体墙
+        const postStart = opOffset + opWidth;
+        const postLen = length - postStart;
+        if (postLen > 0.05) {
+          const postGeom = new THREE.BoxGeometry(postLen, totalH, thickness);
+          const postMesh = new THREE.Mesh(postGeom, wallMat);
+          postMesh.position.set(postStart + postLen / 2, totalH / 2, 0);
+          postMesh.receiveShadow = true;
+          postMesh.castShadow = true;
+          wallGroup.add(postMesh);
+        }
+
+        // C. 开洞上方过梁实体 (Header)
+        if (topH > 0.05) {
+          const topGeom = new THREE.BoxGeometry(opWidth, topH, thickness);
+          const topMesh = new THREE.Mesh(topGeom, wallMat);
+          topMesh.position.set(opOffset + opWidth / 2, totalH - topH / 2, 0);
+          topMesh.receiveShadow = true;
+          topMesh.castShadow = true;
+          wallGroup.add(topMesh);
+        }
+
+        // D. 窗台下部实体 (Sill) - 仅窗户有
+        if (op.type === 'window' && sillH > 0.05) {
+          const sillGeom = new THREE.BoxGeometry(opWidth, sillH, thickness);
+          const sillMesh = new THREE.Mesh(sillGeom, wallMat);
+          sillMesh.position.set(opOffset + opWidth / 2, sillH / 2, 0);
+          sillMesh.receiveShadow = true;
+          sillMesh.castShadow = true;
+          wallGroup.add(sillMesh);
+
+          // 窗户极简铝合金框架与高透物理玻璃
+          const glass = new THREE.Mesh(new THREE.PlaneGeometry(opWidth * 0.98, opH * 0.98), glassMat);
+          glass.position.set(opOffset + opWidth / 2, sillH + opH / 2, 0);
+          wallGroup.add(glass);
+        }
+
+        wallGroup.userData = { isWall: true, isSouthWall, wallData: wall };
+        if (isSouthWall) this.southWalls.push(wallGroup);
+        this.roomGroup.add(wallGroup);
+      });
+    } else {
+      // 完整无孔实体墙
+      const wallGeom = new THREE.BoxGeometry(length, totalH, thickness);
+      const wallMesh = new THREE.Mesh(wallGeom, wallMat);
+      wallMesh.position.set(midX, totalH / 2, midZ);
+      wallMesh.rotation.y = -angle;
+      wallMesh.receiveShadow = true;
+      wallMesh.castShadow = true;
+      wallMesh.userData = { isWall: true, isSouthWall, wallData: wall };
+      if (isSouthWall) this.southWalls.push(wallMesh);
+      this.roomGroup.add(wallMesh);
+    }
+  }
+
+  /**
+   * 3D 地面工程图纸半透明投影对照层 (Blueprint Floor Projection Overlay)
+   */
+  _buildBlueprintOverlay(floorPlan, w, d) {
+    let texture = null;
+    if (floorPlan.blueprintCanvas) {
+      texture = new THREE.CanvasTexture(floorPlan.blueprintCanvas);
+    } else if (floorPlan.overlayImage) {
+      const loader = new THREE.TextureLoader();
+      texture = loader.load(floorPlan.overlayImage);
+    }
+
+    if (!texture) return;
+
+    const overlayGeom = new THREE.PlaneGeometry(w, d);
+    const overlayMat = new THREE.MeshBasicMaterial({
+      map: texture,
+      transparent: true,
+      opacity: this.blueprintOverlayOpacity,
+      depthWrite: false
+    });
+
+    const overlayMesh = new THREE.Mesh(overlayGeom, overlayMat);
+    overlayMesh.rotation.x = -Math.PI / 2;
+    overlayMesh.position.set(0, 0.003, 0); // 微浮于地面 3mm，绝不发生 Z-fighting 闪烁
+    overlayMesh.visible = this.isBlueprintOverlayVisible;
+    this.blueprintOverlayMesh = overlayMesh;
+    this.roomGroup.add(overlayMesh);
+  }
+
+  /**
+   * 设置地面图纸对照层可见性
+   */
+  setBlueprintOverlayVisible(visible) {
+    this.isBlueprintOverlayVisible = visible;
+    if (this.blueprintOverlayMesh) {
+      this.blueprintOverlayMesh.visible = visible;
+    }
+  }
+
+  /**
+   * 设置地面图纸对照层透明度 (0.0 - 1.0)
+   */
+  setBlueprintOverlayOpacity(opacity) {
+    this.blueprintOverlayOpacity = opacity;
+    if (this.blueprintOverlayMesh && this.blueprintOverlayMesh.material) {
+      this.blueprintOverlayMesh.material.opacity = opacity;
+    }
+  }
+
+  /**
+   * 单矩形常规毛坯房构建 (Legacy Box Room)
+   */
+  _buildBoxRoom(floorMat, wallMat, ceilingMat) {
+    const { width, depth, height } = this.currentConfig;
+
+    this.floorTexture.repeat.set(width, depth);
+    this.wallTexture.repeat.set(Math.max(width, depth), height);
+
+    // 1. 水泥地面
     const floorGeom = new THREE.PlaneGeometry(width, depth);
     const floor = new THREE.Mesh(floorGeom, floorMat);
     floor.rotation.x = -Math.PI / 2;
@@ -147,19 +390,19 @@ export class RoomBuilder {
     ceiling.rotation.x = Math.PI / 2;
     ceiling.position.set(0, height, 0);
     ceiling.receiveShadow = true;
-    this.ceiling = ceiling;
+    this.ceilings.push(ceiling);
     this.roomGroup.add(ceiling);
 
-    // 3. 结构承重梁 (Structural Ceiling Beam)
+    // 3. 结构承重梁
     const beamGeom = new THREE.BoxGeometry(0.35, 0.45, depth);
     const beam = new THREE.Mesh(beamGeom, ceilingMat);
     beam.position.set(width / 4, height - 0.225, 0);
     beam.castShadow = true;
     beam.receiveShadow = true;
-    this.beam = beam;
+    this.beams.push(beam);
     this.roomGroup.add(beam);
 
-    // 4. 角落承重柱 (Corner Pillar 400x400mm - 毛坯房经典构造)
+    // 4. 角落承重柱
     const pillarGeom = new THREE.BoxGeometry(0.42, height, 0.42);
     const pillar = new THREE.Mesh(pillarGeom, wallMat);
     pillar.position.set(-width / 2 + 0.21, height / 2, -depth / 2 + 0.21);
@@ -168,24 +411,11 @@ export class RoomBuilder {
     pillar.userData = { isObstacle: true, isPillar: true };
     this.roomGroup.add(pillar);
 
-    // 5. 四面墙体 (带窗洞与门洞的逼真构建)
+    // 5. 四面墙体
     this._buildWalls(width, depth, height, wallMat);
 
     // 6. 重建 LiDAR 扫描网格层
     this._buildLidarScanMesh(width, depth, height);
-
-    // 初始应用当前模式的顶板/南墙可见性
-    if (this.currentViewMode) {
-      this.setViewMode(this.currentViewMode);
-    }
-  }
-
-  setViewMode(mode) {
-    this.currentViewMode = mode;
-    const isOrbit = mode === 'orbit';
-    if (this.ceiling) this.ceiling.visible = !isOrbit;
-    if (this.beam) this.beam.visible = !isOrbit;
-    if (this.southWall) this.southWall.visible = !isOrbit;
   }
 
   _buildWalls(w, d, h, wallMat) {
@@ -197,10 +427,10 @@ export class RoomBuilder {
     southWall.position.set(0, h / 2, d / 2 + wallThickness / 2);
     southWall.receiveShadow = true;
     southWall.userData = { isWall: true, side: 'south' };
-    this.southWall = southWall;
+    this.southWalls.push(southWall);
     this.roomGroup.add(southWall);
 
-    // 东墙 (完整承重墙)
+    // 东墙
     const eastWallGeom = new THREE.BoxGeometry(wallThickness, h, d);
     const eastWall = new THREE.Mesh(eastWallGeom, wallMat);
     eastWall.position.set(w / 2 + wallThickness / 2, h / 2, 0);
@@ -208,7 +438,7 @@ export class RoomBuilder {
     eastWall.userData = { isWall: true, side: 'east' };
     this.roomGroup.add(eastWall);
 
-    // 西墙 (完整承重墙)
+    // 西墙
     const westWallGeom = new THREE.BoxGeometry(wallThickness, h, d);
     const westWall = new THREE.Mesh(westWallGeom, wallMat);
     westWall.position.set(-w / 2 - wallThickness / 2, h / 2, 0);
@@ -216,20 +446,17 @@ export class RoomBuilder {
     westWall.userData = { isWall: true, side: 'west' };
     this.roomGroup.add(westWall);
 
-    // 北墙：带落地大窗户 (模拟真实采光窗)
-    // 窗宽占北墙的 60%
+    // 北墙：带落地大窗户
     const winW = Math.min(w * 0.7, 3.2);
     const winH = h * 0.75;
-    const sillH = 0.45; // 窗台高度
+    const sillH = 0.45;
 
-    // 北墙窗台下实体部分
     const sillGeom = new THREE.BoxGeometry(w, sillH, wallThickness);
     const sill = new THREE.Mesh(sillGeom, wallMat);
     sill.position.set(0, sillH / 2, -d / 2 - wallThickness / 2);
     sill.receiveShadow = true;
     this.roomGroup.add(sill);
 
-    // 北墙窗顶梁部分
     const topH = h - (sillH + winH);
     const topGeom = new THREE.BoxGeometry(w, topH, wallThickness);
     const topWall = new THREE.Mesh(topGeom, wallMat);
@@ -237,7 +464,6 @@ export class RoomBuilder {
     topWall.receiveShadow = true;
     this.roomGroup.add(topWall);
 
-    // 北墙左右两侧垛子
     const sideW = (w - winW) / 2;
     if (sideW > 0.05) {
       const leftGeom = new THREE.BoxGeometry(sideW, winH, wallThickness);
@@ -251,8 +477,6 @@ export class RoomBuilder {
       this.roomGroup.add(rightMesh);
     }
 
-    // 落地窗透明玻璃与黑色极简断桥铝合金框
-    const frameMat = new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.3, metalness: 0.8 });
     const glassMat = new THREE.MeshPhysicalMaterial({
       color: '#ffffff',
       transmission: 0.9,
@@ -266,27 +490,23 @@ export class RoomBuilder {
     glass.position.set(0, sillH + winH / 2, -d / 2);
     this.roomGroup.add(glass);
 
-    // 窗外自然采光与城市天空远景天幕
     this._buildOutdoorBackdrop(w, d, h);
   }
 
   _buildOutdoorBackdrop(w, d, h) {
-    // 窗外日光与开阔天际线画卷
     const backdropGeom = new THREE.PlaneGeometry(16, 10);
     const canvas = document.createElement('canvas');
     canvas.width = 512;
     canvas.height = 256;
     const ctx = canvas.getContext('2d');
     
-    // 天空渐变与阳光
     const grad = ctx.createLinearGradient(0, 0, 0, 256);
-    grad.addColorStop(0, '#38bdf8');   // 天蓝
-    grad.addColorStop(0.6, '#bae6fd'); // 柔和地平线
-    grad.addColorStop(1, '#94a3b8');   // 城市轮廓灰
+    grad.addColorStop(0, '#38bdf8');
+    grad.addColorStop(0.6, '#bae6fd');
+    grad.addColorStop(1, '#94a3b8');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, 512, 256);
 
-    // 远山与现代楼群剪影
     ctx.fillStyle = '#64748b';
     for (let x = 0; x < 512; x += 32) {
       const bh = 30 + Math.random() * 45;
@@ -308,13 +528,19 @@ export class RoomBuilder {
       if (obj.material) obj.material.dispose();
     }
 
-    // 创建 LiDAR 空间网格 (Spatial Mesh Grid)
-    // 模拟 Apple RoomPlan / Quest 3 扫描房间时在地面与墙面浮现的绿色/青色点阵扫描线
     const gridHelper = new THREE.GridHelper(Math.max(w, d) * 1.2, Math.round(Math.max(w, d) * 4), 0x06b6d4, 0x0e7490);
-    gridHelper.position.set(0, 0.005, 0); // 略微浮于地面 5mm
+    gridHelper.position.set(0, 0.005, 0);
     this.scanGridGroup.add(gridHelper);
 
     this.scanGridGroup.visible = false;
+  }
+
+  setViewMode(mode) {
+    this.currentViewMode = mode;
+    const isOrbit = mode === 'orbit';
+    this.ceilings.forEach(c => { if (c) c.visible = !isOrbit; });
+    this.beams.forEach(b => { if (b) b.visible = !isOrbit; });
+    this.southWalls.forEach(w => { if (w) w.visible = !isOrbit; });
   }
 
   setLidarScanVisible(visible) {
@@ -322,12 +548,26 @@ export class RoomBuilder {
   }
 
   getWallBounds() {
+    const { floorPlan } = this.currentConfig;
+    if (floorPlan) {
+      const w = floorPlan.targetWidthMeters || this.currentConfig.width;
+      const d = floorPlan.targetDepthMeters || this.currentConfig.depth;
+      return {
+        minX: -w / 2,
+        maxX: w / 2,
+        minZ: -d / 2,
+        maxZ: d / 2,
+        wallSegments: floorPlan.walls || []
+      };
+    }
+
     const { width, depth } = this.currentConfig;
     return {
       minX: -width / 2,
       maxX: width / 2,
       minZ: -depth / 2,
-      maxZ: depth / 2
+      maxZ: depth / 2,
+      wallSegments: []
     };
   }
 }

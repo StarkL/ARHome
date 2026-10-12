@@ -528,10 +528,41 @@ export class SceneManager {
     }
   }
 
-  // ================= 房间尺寸更新 =================
+  // ================= 房间尺寸与户型图纸加载 =================
   updateRoomConfig(config) {
     this.roomBuilder.build(config);
     this._onItemMoved();
+  }
+
+  loadFloorPlan(floorPlan, options = {}) {
+    this.roomBuilder.build({
+      floorPlan,
+      width: floorPlan.targetWidthMeters,
+      depth: floorPlan.targetDepthMeters,
+      height: floorPlan.wallHeightMeters,
+      wallFinish: options.wallFinish || this.roomBuilder.currentConfig.wallFinish
+    });
+
+    // 自动重定位观察视角与相机距离
+    const maxDim = Math.max(floorPlan.targetWidthMeters || 6, floorPlan.targetDepthMeters || 6);
+    this.orbitControls.target.set(0, 0.6, 0);
+    this.camera.position.set(0, maxDim * 1.25, maxDim * 1.35);
+    this.camera.lookAt(0, 0.6, 0);
+
+    // 重置漫游出生点至大厅中央
+    if (this.walkController) {
+      this.walkController.position.set(0, this.walkController.eyeHeight, (floorPlan.targetDepthMeters || 6) / 4);
+    }
+
+    this._onItemMoved();
+  }
+
+  setBlueprintOverlayVisible(visible) {
+    this.roomBuilder.setBlueprintOverlayVisible(visible);
+  }
+
+  setBlueprintOverlayOpacity(opacity) {
+    this.roomBuilder.setBlueprintOverlayOpacity(opacity);
   }
 
   setLidarScanActive(active) {

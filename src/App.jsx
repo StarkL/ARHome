@@ -7,6 +7,7 @@ import { ARGlassesHUD } from './components/ARGlassesHUD';
 import { ClearanceWarningBanner } from './components/ClearanceWarningBanner';
 import { RoomSettingsModal } from './components/RoomSettingsModal';
 import { BOMExportModal } from './components/BOMExportModal';
+import { FloorPlanImportModal } from './components/FloorPlanImportModal';
 import { WalkthroughControlsGuide } from './components/WalkthroughControlsGuide';
 import { FURNITURE_ITEMS } from './data/furnitureCatalogData';
 import { SAMPLE_PRESETS } from './data/samplePresets';
@@ -28,7 +29,12 @@ export default function App() {
 
   // 弹窗状态
   const [isRoomSettingsOpen, setIsRoomSettingsOpen] = useState(false);
+  const [isFloorPlanModalOpen, setIsFloorPlanModalOpen] = useState(false);
   const [isBOMOpen, setIsBOMOpen] = useState(false);
+
+  // 地面图纸投影
+  const [isOverlayVisible, setIsOverlayVisible] = useState(true);
+  const [overlayOpacity, setOverlayOpacity] = useState(0.65);
 
   // 漫游与体感
   const [isLocked, setIsLocked] = useState(false);
@@ -40,7 +46,8 @@ export default function App() {
     width: 5.0,
     depth: 4.2,
     height: 2.8,
-    wallFinish: 'concrete'
+    wallFinish: 'concrete',
+    floorPlan: null
   });
 
   const getItemByCatalogId = useCallback((catId) => {
@@ -168,6 +175,27 @@ export default function App() {
     setPlacedItems([...sceneManagerRef.current.placedItems]);
   };
 
+  // 户型图纸加载与 3D 重建
+  const handleLoadFloorPlan = (floorPlan, options = {}) => {
+    if (!sceneManagerRef.current) return;
+    setRoomConfig({
+      width: floorPlan.targetWidthMeters,
+      depth: floorPlan.targetDepthMeters,
+      height: floorPlan.wallHeightMeters || 2.8,
+      wallFinish: options.wallFinish || 'concrete',
+      floorPlan
+    });
+
+    if (options.clearExistingFurniture) {
+      sceneManagerRef.current.clearAllItems();
+      setSelectedItem(null);
+      setPlacedItems([]);
+    }
+
+    sceneManagerRef.current.loadFloorPlan(floorPlan, options);
+    setPlacedItems([...sceneManagerRef.current.placedItems]);
+  };
+
   // 房间尺寸保存
   const handleSaveRoomConfig = (newConfig) => {
     setRoomConfig(newConfig);
@@ -230,6 +258,7 @@ export default function App() {
         isLidarScanActive={isLidarScanActive}
         setIsLidarScanActive={setIsLidarScanActive}
         onOpenRoomSettings={() => setIsRoomSettingsOpen(true)}
+        onOpenFloorPlanModal={() => setIsFloorPlanModalOpen(true)}
         onOpenBOM={() => setIsBOMOpen(true)}
         onLoadPreset={handleLoadPreset}
         onTakeScreenshot={handleTakeScreenshot}
@@ -301,6 +330,23 @@ export default function App() {
         placedItems={placedItems}
         roomConfig={roomConfig}
         onExportJson={handleExportJson}
+      />
+
+      {/* 户型图纸自动解析与 3D 重建工作台 */}
+      <FloorPlanImportModal
+        isOpen={isFloorPlanModalOpen}
+        onClose={() => setIsFloorPlanModalOpen(false)}
+        onLoadFloorPlan={handleLoadFloorPlan}
+        isOverlayVisible={isOverlayVisible}
+        onToggleOverlay={(visible) => {
+          setIsOverlayVisible(visible);
+          if (sceneManagerRef.current) sceneManagerRef.current.setBlueprintOverlayVisible(visible);
+        }}
+        overlayOpacity={overlayOpacity}
+        onChangeOverlayOpacity={(val) => {
+          setOverlayOpacity(val);
+          if (sceneManagerRef.current) sceneManagerRef.current.setBlueprintOverlayOpacity(val);
+        }}
       />
     </div>
   );
