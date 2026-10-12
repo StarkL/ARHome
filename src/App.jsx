@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { SceneManager } from './engine/SceneManager';
+import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
+import * as THREE from 'three';
+import { ARHomeCanvas } from './components/canvas/ARHomeCanvas';
 import { Header } from './components/Header';
 import { FurnitureCatalog } from './components/FurnitureCatalog';
 import { InspectorPanel } from './components/InspectorPanel';
@@ -9,175 +10,245 @@ import { RoomSettingsModal } from './components/RoomSettingsModal';
 import { BOMExportModal } from './components/BOMExportModal';
 import { FloorPlanImportModal } from './components/FloorPlanImportModal';
 import { WalkthroughControlsGuide } from './components/WalkthroughControlsGuide';
+
 import { FURNITURE_ITEMS } from './data/furnitureCatalogData';
 import { SAMPLE_PRESETS } from './data/samplePresets';
+import { buildFurnitureModel } from './engine/FurnitureModels';
+import { ClearanceChecker } from './engine/ClearanceChecker';
+import { clampAndSnapItemPosition, snapSelectedItemToNearestWall } from './engine/PhysicsHelper';
 
 export default function App() {
-  const containerRef = useRef(null);
-  const sceneManagerRef = useRef(null);
+  const canvasComponentRef = useRef(null);
 
-  // 界面状态
+  // 1. 核心视图模式
   const [viewMode, setViewMode] = useState('orbit'); // 'orbit' | 'walk' | 'ar_pov'
   const [isCatalogOpen, setIsCatalogOpen] = useState(true);
-  const [selectedItem, setSelectedItem] = useState(null);
-  const [placedItems, setPlacedItems] = useState([]);
-  const [warnings, setWarnings] = useState([]);
-  
-  // 光照与扫描
-  const [sunlightTime, setSunlightTime] = useState('noon');
-  const [isLidarScanActive, setIsLidarScanActive] = useState(false);
 
-  // 弹窗状态
-  const [isRoomSettingsOpen, setIsRoomSettingsOpen] = useState(false);
-  const [isFloorPlanModalOpen, setIsFloorPlanModalOpen] = useState(false);
-  const [isBOMOpen, setIsBOMOpen] = useState(false);
-
-  // 地面图纸投影
-  const [isOverlayVisible, setIsOverlayVisible] = useState(true);
-  const [overlayOpacity, setOverlayOpacity] = useState(0.65);
-
-  // 漫游与体感
-  const [isLocked, setIsLocked] = useState(false);
-  const [eyeHeight, setEyeHeight] = useState(1.68);
-  const [isWebcamActive, setIsWebcamActive] = useState(false);
-
-  // 房间尺寸配置
+  // 2. 空间参数与户型
   const [roomConfig, setRoomConfig] = useState({
-    width: 5.0,
-    depth: 4.2,
+    width: 4.5,
+    depth: 3.8,
     height: 2.8,
     wallFinish: 'concrete',
     floorPlan: null
   });
 
+  // 3. 家具实体状态 (React 声明式统一驱动)
+  const [placedItems, setPlacedItems] = useState([]);
+  const [selectedItem, setSelectedItem] = useState(null);
+  const [isColliding, setIsColliding] = useState(false);
+
+  // 4. 环境与动线安全
+  const [sunlightTime, setSunlightTime] = useState('noon');
+  const [isLidarScanActive, setIsLidarScanActive] = useState(false);
+  const [warnings, setWarnings] = useState([]);
+  const clearanceChecker = useMemo(() => new ClearanceChecker(new THREE.Scene()), []);
+
+  // 5. 地面工程图纸对照层
+  const [isOverlayVisible, setIsOverlayVisible] = useState(true);
+  const [overlayOpacity, setOverlayOpacity] = useState(0.65);
+
+  // 6. 漫游与体感
+  const [isLocked, setIsLocked] = useState(false);
+  const [eyeHeight, setEyeHeight] = useState(1.68);
+  const [isWebcamActive, setIsWebcamActive] = useState(false);
+  const [directionState, setDirectionState] = useState({
+    forward: false,
+    backward: false,
+    left: false,
+    right: false
+  });
+
+  // 7. 模态窗口
+  const [isRoomSettingsOpen, setIsRoomSettingsOpen] = useState(false);
+  const [isFloorPlanModalOpen, setIsFloorPlanModalOpen] = useState(false);
+  const [isBOMOpen, setIsBOMOpen] = useState(false);
+
+  // 动态物理墙体边界
+  const wallBounds = useMemo(() => {
+    const w = roomConfig.floorPlan?.targetWidthMeters || roomConfig.width || 5.0;
+    const d = roomConfig.floorPlan?.targetDepthMeters || roomConfig.depth || 4.2;
+    return {
+      minX: -w / 2,
+      maxX: w / 2,
+      minZ: -d / 2,
+      maxZ: d / 2,
+      wallSegments: roomConfig.floorPlan?.walls || []
+    };
+  }, [roomConfig]);
+
+  // 工具：根据 catalogId 查找元数据
   const getItemByCatalogId = useCallback((catId) => {
     return FURNITURE_ITEMS.find(item => item.id === catId);
   }, []);
 
-  // 初始化 3D 渲染器与场景管理器
+  // 重新评估通道动线与碰撞
+  const evaluateClearance = useCallback((currentItems) => {
+    const objs = currentItems.map(it => it.group || it);
+    const result = clearanceChecker.check(objs, wallBounds);
+    setWarnings(result);
+  }, [clearanceChecker, wallBounds]);
+
+  const hasInitializedRef = useRef(false);
+
+  // 初始化：仅在首次挂载时载入默认主卧 1:1 预设方案
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (hasInitializedRef.current) return;
+    hasInitializedRef.current = true;
 
-    const manager = new SceneManager(containerRef.current, {
-      onSelect: (item) => setSelectedItem(item),
-      onWarningsChange: (warns) => {
-        setWarnings(warns);
-        if (sceneManagerRef.current) {
-          setPlacedItems([...sceneManagerRef.current.placedItems]);
-        }
-      },
-      onLockChange: (locked) => setIsLocked(locked),
-      getItemByCatalogId
-    });
-
-    sceneManagerRef.current = manager;
-
-    // 默认载入经典的 1:1 主卧样板布局
     const defaultPreset = SAMPLE_PRESETS[0];
     if (defaultPreset) {
       setRoomConfig(defaultPreset.roomConfig);
-      manager.loadLayoutJson({
-        roomConfig: defaultPreset.roomConfig,
-        items: defaultPreset.items.map(it => ({
+      const initialItems = defaultPreset.items.map(it => {
+        const cat = getItemByCatalogId(it.modelId);
+        if (!cat) return null;
+        const group = buildFurnitureModel(cat, it.colorVariant);
+        group.position.set(it.position[0], 0, it.position[2]);
+        group.rotation.y = it.rotationY || 0;
+        group.userData.uid = it.uid;
+        return {
+          uid: it.uid,
           catalogId: it.modelId,
-          position: it.position,
-          rotationY: it.rotationY,
-          color: it.colorVariant,
-          uid: it.uid
-        }))
-      }, getItemByCatalogId);
+          group,
+          position: group.position,
+          rotation: group.rotation,
+          userData: group.userData
+        };
+      }).filter(Boolean);
+
+      setPlacedItems(initialItems);
+      evaluateClearance(initialItems);
     }
+  }, [getItemByCatalogId, evaluateClearance]);
 
-    return () => {
-      manager.dispose();
-    };
-  }, [getItemByCatalogId]);
-
-  // 视角模式同步
+  // 视角模式同步 (漫游时收起侧边栏)
   useEffect(() => {
-    if (sceneManagerRef.current) {
-      sceneManagerRef.current.setViewMode(viewMode);
-      if (viewMode !== 'orbit') {
-        setIsCatalogOpen(false); // 漫游时自动收起侧边栏，视野最大化
-      }
+    if (viewMode !== 'orbit') {
+      setIsCatalogOpen(false);
+      setSelectedItem(null);
     }
   }, [viewMode]);
 
-  // 光照同步
-  useEffect(() => {
-    if (sceneManagerRef.current) {
-      sceneManagerRef.current.setSunlightTime(sunlightTime);
-    }
-  }, [sunlightTime]);
-
-  // LiDAR 扫描线同步
-  useEffect(() => {
-    if (sceneManagerRef.current) {
-      sceneManagerRef.current.setLidarScanActive(isLidarScanActive);
-    }
-  }, [isLidarScanActive]);
-
-  // 人眼高度同步
-  useEffect(() => {
-    if (sceneManagerRef.current && sceneManagerRef.current.walkController) {
-      sceneManagerRef.current.walkController.setEyeHeight(eyeHeight);
-    }
-  }, [eyeHeight]);
-
-  // 添加家具
+  // ================= 家具管理操作 =================
   const handleAddItem = (catalogItem) => {
-    if (!sceneManagerRef.current) return;
-    // 默认摆放在房间中央略微随机偏置位置
+    const uid = `item-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const group = buildFurnitureModel(catalogItem);
     const pos = [(Math.random() - 0.5) * 0.8, 0, (Math.random() - 0.5) * 0.8];
-    sceneManagerRef.current.addFurnitureItem(catalogItem, pos, 0);
-    setPlacedItems([...sceneManagerRef.current.placedItems]);
+    group.position.set(pos[0], 0, pos[2]);
+    group.userData.uid = uid;
+
+    const newItem = {
+      uid,
+      catalogId: catalogItem.id,
+      group,
+      position: group.position,
+      rotation: group.rotation,
+      userData: group.userData
+    };
+
+    const isCollide = clampAndSnapItemPosition(group, wallBounds, placedItems.map(p => p.group));
+    setIsColliding(isCollide);
+
+    const updated = [...placedItems, newItem];
+    setPlacedItems(updated);
+    setSelectedItem(newItem);
+    evaluateClearance(updated);
   };
 
-  // 空间操作
+  const handleSelectItem = (groupObj) => {
+    if (!groupObj) {
+      setSelectedItem(null);
+      return;
+    }
+    const found = placedItems.find(it => it.group === groupObj || it.uid === groupObj.userData?.uid);
+    if (found) {
+      const isCollide = clampAndSnapItemPosition(found.group, wallBounds, placedItems.map(p => p.group));
+      setIsColliding(isCollide);
+      setSelectedItem(found);
+    }
+  };
+
   const handleRotate = (angleRad) => {
-    if (sceneManagerRef.current) sceneManagerRef.current.rotateSelectedItem(angleRad);
+    if (!selectedItem?.group) return;
+    selectedItem.group.rotation.y += angleRad;
+    selectedItem.rotation = selectedItem.group.rotation;
+    const isCollide = clampAndSnapItemPosition(selectedItem.group, wallBounds, placedItems.map(p => p.group));
+    setIsColliding(isCollide);
+    setPlacedItems([...placedItems]);
+    evaluateClearance(placedItems);
   };
 
   const handleSnapToWall = () => {
-    if (sceneManagerRef.current) sceneManagerRef.current.snapSelectedItemToNearestWall();
+    if (!selectedItem?.group) return;
+    snapSelectedItemToNearestWall(selectedItem.group, wallBounds);
+    const isCollide = clampAndSnapItemPosition(selectedItem.group, wallBounds, placedItems.map(p => p.group));
+    setIsColliding(isCollide);
+    setPlacedItems([...placedItems]);
+    evaluateClearance(placedItems);
   };
 
   const handleDuplicate = () => {
-    if (sceneManagerRef.current) sceneManagerRef.current.duplicateSelectedItem();
+    if (!selectedItem) return;
+    const cat = getItemByCatalogId(selectedItem.userData.catalogId);
+    if (!cat) return;
+    const uid = `item-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const group = buildFurnitureModel(cat, selectedItem.userData.color);
+    group.position.set(selectedItem.position.x + 0.3, 0, selectedItem.position.z + 0.3);
+    group.rotation.y = selectedItem.rotation.y;
+    group.userData.uid = uid;
+
+    const copyItem = {
+      uid,
+      catalogId: cat.id,
+      group,
+      position: group.position,
+      rotation: group.rotation,
+      userData: group.userData
+    };
+
+    clampAndSnapItemPosition(group, wallBounds, placedItems.map(p => p.group));
+    const updated = [...placedItems, copyItem];
+    setPlacedItems(updated);
+    setSelectedItem(copyItem);
+    evaluateClearance(updated);
   };
 
   const handleDelete = () => {
-    if (sceneManagerRef.current) {
-      sceneManagerRef.current.removeSelectedItem();
-      setSelectedItem(null);
-      setPlacedItems([...sceneManagerRef.current.placedItems]);
-    }
+    if (!selectedItem) return;
+    const updated = placedItems.filter(it => it.uid !== selectedItem.uid);
+    setPlacedItems(updated);
+    setSelectedItem(null);
+    evaluateClearance(updated);
   };
 
   const handleChangeColor = (newColor) => {
-    if (sceneManagerRef.current) sceneManagerRef.current.updateItemColor(newColor);
+    if (!selectedItem) return;
+    const cat = getItemByCatalogId(selectedItem.userData.catalogId);
+    if (!cat) return;
+
+    // 重新根据新颜色创建网格，保持位置不变
+    const group = buildFurnitureModel(cat, newColor);
+    group.position.copy(selectedItem.position);
+    group.rotation.copy(selectedItem.rotation);
+    group.userData.uid = selectedItem.uid;
+
+    selectedItem.group = group;
+    selectedItem.userData = group.userData;
+    setPlacedItems([...placedItems]);
   };
 
-  // 预设载入
-  const handleLoadPreset = (preset) => {
-    if (!sceneManagerRef.current) return;
-    setRoomConfig(preset.roomConfig);
-    sceneManagerRef.current.loadLayoutJson({
-      roomConfig: preset.roomConfig,
-      items: preset.items.map(it => ({
-        catalogId: it.modelId,
-        position: it.position,
-        rotationY: it.rotationY,
-        color: it.colorVariant,
-        uid: it.uid
-      }))
-    }, getItemByCatalogId);
-    setPlacedItems([...sceneManagerRef.current.placedItems]);
+  const handleItemMove = (item, isCollide) => {
+    setIsColliding(isCollide);
   };
 
-  // 户型图纸加载与 3D 重建
+  const handleItemMoveEnd = (item, isCollide) => {
+    setIsColliding(isCollide);
+    setPlacedItems([...placedItems]);
+    evaluateClearance(placedItems);
+  };
+
+  // ================= 户型图纸与预设方案 =================
   const handleLoadFloorPlan = (floorPlan, options = {}) => {
-    if (!sceneManagerRef.current) return;
     setRoomConfig({
       width: floorPlan.targetWidthMeters,
       depth: floorPlan.targetDepthMeters,
@@ -187,27 +258,43 @@ export default function App() {
     });
 
     if (options.clearExistingFurniture) {
-      sceneManagerRef.current.clearAllItems();
-      setSelectedItem(null);
       setPlacedItems([]);
+      setSelectedItem(null);
+      setWarnings([]);
+    } else {
+      evaluateClearance(placedItems);
     }
-
-    sceneManagerRef.current.loadFloorPlan(floorPlan, options);
-    setPlacedItems([...sceneManagerRef.current.placedItems]);
   };
 
-  // 房间尺寸保存
-  const handleSaveRoomConfig = (newConfig) => {
-    setRoomConfig(newConfig);
-    if (sceneManagerRef.current) {
-      sceneManagerRef.current.updateRoomConfig(newConfig);
-    }
+  const handleLoadPreset = (preset) => {
+    setRoomConfig(preset.roomConfig);
+    const newItems = preset.items.map(it => {
+      const cat = getItemByCatalogId(it.modelId);
+      if (!cat) return null;
+      const group = buildFurnitureModel(cat, it.colorVariant);
+      group.position.set(it.position[0], 0, it.position[2]);
+      group.rotation.y = it.rotationY || 0;
+      group.userData.uid = it.uid;
+      return {
+        uid: it.uid,
+        catalogId: it.modelId,
+        group,
+        position: group.position,
+        rotation: group.rotation,
+        userData: group.userData
+      };
+    }).filter(Boolean);
+
+    setPlacedItems(newItems);
+    setSelectedItem(null);
+    evaluateClearance(newItems);
   };
 
   // 截屏
   const handleTakeScreenshot = () => {
-    if (!sceneManagerRef.current) return;
-    const dataUrl = sceneManagerRef.current.takeScreenshot();
+    if (!canvasComponentRef.current) return;
+    const dataUrl = canvasComponentRef.current.takeScreenshot();
+    if (!dataUrl) return;
     const link = document.createElement('a');
     link.download = `ARHome_1to1_Preview_${Date.now()}.png`;
     link.href = dataUrl;
@@ -216,8 +303,22 @@ export default function App() {
 
   // 导出方案 JSON
   const handleExportJson = () => {
-    if (!sceneManagerRef.current) return;
-    const json = sceneManagerRef.current.exportLayoutJson();
+    const json = {
+      version: '2.0.0-r3f',
+      exportedAt: new Date().toISOString(),
+      roomConfig,
+      items: placedItems.map(it => ({
+        uid: it.uid,
+        catalogId: it.catalogId,
+        name: it.userData.name,
+        category: it.userData.category,
+        dimensionsMm: it.userData.dimensionsMm,
+        position: [it.position.x, it.position.y || 0, it.position.z],
+        rotationY: it.rotation.y || 0,
+        color: it.userData.color,
+        priceEstimate: it.userData.priceEstimate
+      }))
+    };
     const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -226,27 +327,34 @@ export default function App() {
     link.click();
   };
 
-  // 摄像头穿透
-  const handleToggleWebcam = async () => {
-    if (!sceneManagerRef.current) return;
-    const active = await sceneManagerRef.current.toggleWebcamPassthrough(!isWebcamActive);
-    setIsWebcamActive(active);
-  };
-
-  // 请求锁定视角
-  const handleRequestLock = () => {
-    if (sceneManagerRef.current && sceneManagerRef.current.walkController) {
-      sceneManagerRef.current.walkController.requestLock();
-    }
+  // 虚拟方向盘 (D-Pad)
+  const handleDirectionChange = (dir, active) => {
+    setDirectionState(prev => ({ ...prev, [dir]: active }));
   };
 
   return (
     <div className="w-full h-full relative overflow-hidden select-none bg-slate-950 font-sans">
-      {/* 3D WebGL 画布容器 */}
-      <div 
-        ref={containerRef} 
-        id="viewport-canvas"
-        className="w-full h-full cursor-grab active:cursor-grabbing"
+      {/* 🚀 React Three Fiber 3D 渲染核心 */}
+      <ARHomeCanvas
+        ref={canvasComponentRef}
+        viewMode={viewMode}
+        roomConfig={roomConfig}
+        wallBounds={wallBounds}
+        sunlightTime={sunlightTime}
+        isLidarScanActive={isLidarScanActive}
+        isOverlayVisible={isOverlayVisible}
+        overlayOpacity={overlayOpacity}
+        placedItems={placedItems}
+        selectedItem={selectedItem}
+        isColliding={isColliding}
+        eyeHeight={eyeHeight}
+        isLocked={isLocked}
+        onLockChange={setIsLocked}
+        directionState={directionState}
+        onSelectItem={handleSelectItem}
+        onDeselect={() => setSelectedItem(null)}
+        onItemChange={handleItemMove}
+        onItemChangeEnd={handleItemMoveEnd}
       />
 
       {/* 顶部主导航栏 */}
@@ -265,7 +373,7 @@ export default function App() {
         onExportJson={handleExportJson}
       />
 
-      {/* 左侧标准尺寸家居库 (设计模式下可用) */}
+      {/* 左侧标准尺寸家居库 (设计模式) */}
       <FurnitureCatalog
         isOpen={isCatalogOpen}
         setIsOpen={setIsCatalogOpen}
@@ -280,9 +388,7 @@ export default function App() {
           onSnapToWall={handleSnapToWall}
           onDuplicate={handleDuplicate}
           onDelete={handleDelete}
-          onClose={() => {
-            if (sceneManagerRef.current) sceneManagerRef.current.deselectItem();
-          }}
+          onClose={() => setSelectedItem(null)}
           onChangeColor={handleChangeColor}
         />
       )}
@@ -291,13 +397,14 @@ export default function App() {
       {viewMode === 'walk' && (
         <WalkthroughControlsGuide
           isLocked={isLocked}
-          onLockRequest={handleRequestLock}
-          eyeHeight={eyeHeight}
-          onDirectionChange={(dir, active) => {
-            if (sceneManagerRef.current && sceneManagerRef.current.walkController) {
-              sceneManagerRef.current.walkController.setDirectionState(dir, active);
+          onLockRequest={() => {
+            const canvasEl = document.querySelector('canvas');
+            if (canvasEl && canvasEl.requestPointerLock) {
+              canvasEl.requestPointerLock();
             }
           }}
+          eyeHeight={eyeHeight}
+          onDirectionChange={handleDirectionChange}
         />
       )}
 
@@ -307,7 +414,7 @@ export default function App() {
           eyeHeight={eyeHeight}
           setEyeHeight={setEyeHeight}
           isWebcamActive={isWebcamActive}
-          onToggleWebcam={handleToggleWebcam}
+          onToggleWebcam={() => setIsWebcamActive(!isWebcamActive)}
           isLocked={isLocked}
         />
       )}
@@ -320,7 +427,7 @@ export default function App() {
         isOpen={isRoomSettingsOpen}
         onClose={() => setIsRoomSettingsOpen(false)}
         currentConfig={roomConfig}
-        onSaveConfig={handleSaveRoomConfig}
+        onSaveConfig={(newConfig) => setRoomConfig(prev => ({ ...prev, ...newConfig }))}
       />
 
       {/* 软装采购物料清单 (BOM) 弹窗 */}
@@ -338,15 +445,9 @@ export default function App() {
         onClose={() => setIsFloorPlanModalOpen(false)}
         onLoadFloorPlan={handleLoadFloorPlan}
         isOverlayVisible={isOverlayVisible}
-        onToggleOverlay={(visible) => {
-          setIsOverlayVisible(visible);
-          if (sceneManagerRef.current) sceneManagerRef.current.setBlueprintOverlayVisible(visible);
-        }}
+        onToggleOverlay={setIsOverlayVisible}
         overlayOpacity={overlayOpacity}
-        onChangeOverlayOpacity={(val) => {
-          setOverlayOpacity(val);
-          if (sceneManagerRef.current) sceneManagerRef.current.setBlueprintOverlayOpacity(val);
-        }}
+        onChangeOverlayOpacity={setOverlayOpacity}
       />
     </div>
   );
