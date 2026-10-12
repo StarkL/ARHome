@@ -6,6 +6,7 @@ export function TransformManager({
   selectedItem,
   viewMode = 'orbit',
   wallBounds,
+  walls = [],
   placedItems = [],
   onItemChange,
   onItemChangeEnd
@@ -21,7 +22,8 @@ export function TransformManager({
     const isColliding = clampAndSnapItemPosition(
       selectedItem.group,
       wallBounds,
-      placedItems.map(p => p.group || p)
+      placedItems.map(p => p.group || p),
+      walls
     );
     if (onItemChange) {
       onItemChange(selectedItem, isColliding);
@@ -33,7 +35,8 @@ export function TransformManager({
     const isColliding = clampAndSnapItemPosition(
       selectedItem.group,
       wallBounds,
-      placedItems.map(p => p.group || p)
+      placedItems.map(p => p.group || p),
+      walls
     );
     if (onItemChangeEnd) {
       onItemChangeEnd(selectedItem, isColliding);
@@ -44,6 +47,7 @@ export function TransformManager({
     <TransformControls
       ref={transformRef}
       object={selectedItem.group}
+      makeDefault
       mode="translate"
       showY={false}
       showX={true}

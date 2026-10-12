@@ -42,12 +42,6 @@ export const ARHomeCanvas = forwardRef(function ARHomeCanvas({
     <div 
       ref={canvasRef} 
       className="w-full h-full relative cursor-grab active:cursor-grabbing select-none"
-      onClick={(e) => {
-        // 点击空白处取消选择
-        if (e.target.tagName === 'CANVAS') {
-          onDeselect();
-        }
-      }}
     >
       <Canvas
         shadows
@@ -84,6 +78,7 @@ export const ARHomeCanvas = forwardRef(function ARHomeCanvas({
           selectedItem={selectedItem}
           viewMode={viewMode}
           wallBounds={wallBounds}
+          walls={roomConfig?.floorPlan?.walls || []}
           placedItems={placedItems}
           onItemChange={onItemChange}
           onItemChangeEnd={onItemChangeEnd}

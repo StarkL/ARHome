@@ -15,7 +15,11 @@ import { FURNITURE_ITEMS } from './data/furnitureCatalogData';
 import { SAMPLE_PRESETS } from './data/samplePresets';
 import { buildFurnitureModel } from './engine/FurnitureModels';
 import { ClearanceChecker } from './engine/ClearanceChecker';
-import { clampAndSnapItemPosition, snapSelectedItemToNearestWall } from './engine/PhysicsHelper';
+import { 
+  clampAndSnapItemPosition, 
+  snapSelectedItemToNearestWall,
+  findSafeSpawnPosition 
+} from './engine/PhysicsHelper';
 
 export default function App() {
   const canvasComponentRef = useRef(null);
@@ -133,8 +137,10 @@ export default function App() {
   const handleAddItem = (catalogItem) => {
     const uid = `item-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const group = buildFurnitureModel(catalogItem);
-    const pos = [(Math.random() - 0.5) * 0.8, 0, (Math.random() - 0.5) * 0.8];
-    group.position.set(pos[0], 0, pos[2]);
+    
+    // 智能安全计算生成落脚点：自动选择合适房间开阔区域，严防卡入墙体
+    const safePos = findSafeSpawnPosition(catalogItem, roomConfig, placedItems, wallBounds);
+    group.position.set(safePos[0], 0, safePos[2]);
     group.userData.uid = uid;
 
     const newItem = {
@@ -146,7 +152,12 @@ export default function App() {
       userData: group.userData
     };
 
-    const isCollide = clampAndSnapItemPosition(group, wallBounds, placedItems.map(p => p.group));
+    const isCollide = clampAndSnapItemPosition(
+      group, 
+      wallBounds, 
+      placedItems.map(p => p.group),
+      roomConfig.floorPlan?.walls || []
+    );
     setIsColliding(isCollide);
 
     const updated = [...placedItems, newItem];
@@ -162,7 +173,12 @@ export default function App() {
     }
     const found = placedItems.find(it => it.group === groupObj || it.uid === groupObj.userData?.uid);
     if (found) {
-      const isCollide = clampAndSnapItemPosition(found.group, wallBounds, placedItems.map(p => p.group));
+      const isCollide = clampAndSnapItemPosition(
+        found.group, 
+        wallBounds, 
+        placedItems.map(p => p.group),
+        roomConfig.floorPlan?.walls || []
+      );
       setIsColliding(isCollide);
       setSelectedItem(found);
     }
@@ -172,7 +188,12 @@ export default function App() {
     if (!selectedItem?.group) return;
     selectedItem.group.rotation.y += angleRad;
     selectedItem.rotation = selectedItem.group.rotation;
-    const isCollide = clampAndSnapItemPosition(selectedItem.group, wallBounds, placedItems.map(p => p.group));
+    const isCollide = clampAndSnapItemPosition(
+      selectedItem.group, 
+      wallBounds, 
+      placedItems.map(p => p.group),
+      roomConfig.floorPlan?.walls || []
+    );
     setIsColliding(isCollide);
     setPlacedItems([...placedItems]);
     evaluateClearance(placedItems);
@@ -181,7 +202,12 @@ export default function App() {
   const handleSnapToWall = () => {
     if (!selectedItem?.group) return;
     snapSelectedItemToNearestWall(selectedItem.group, wallBounds);
-    const isCollide = clampAndSnapItemPosition(selectedItem.group, wallBounds, placedItems.map(p => p.group));
+    const isCollide = clampAndSnapItemPosition(
+      selectedItem.group, 
+      wallBounds, 
+      placedItems.map(p => p.group),
+      roomConfig.floorPlan?.walls || []
+    );
     setIsColliding(isCollide);
     setPlacedItems([...placedItems]);
     evaluateClearance(placedItems);
@@ -206,7 +232,12 @@ export default function App() {
       userData: group.userData
     };
 
-    clampAndSnapItemPosition(group, wallBounds, placedItems.map(p => p.group));
+    clampAndSnapItemPosition(
+      group, 
+      wallBounds, 
+      placedItems.map(p => p.group),
+      roomConfig.floorPlan?.walls || []
+    );
     const updated = [...placedItems, copyItem];
     setPlacedItems(updated);
     setSelectedItem(copyItem);

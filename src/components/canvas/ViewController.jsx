@@ -241,6 +241,7 @@ export function ViewController({
   return viewMode === 'orbit' ? (
     <OrbitControls
       ref={orbitRef}
+      makeDefault
       enableDamping
       dampingFactor={0.05}
       maxPolarAngle={Math.PI / 2 - 0.02}
