@@ -411,6 +411,33 @@ export default function App() {
         onAddItem={handleAddItem}
       />
 
+      {/* 已摆放家具快速切换条 (设计模式且有摆放家具时展示) */}
+      {viewMode === 'orbit' && placedItems.length > 0 && (
+        <div className="absolute top-20 left-72 z-20 flex items-center gap-1.5 p-1.5 rounded-xl bg-slate-900/85 backdrop-blur-md border border-slate-800 shadow-xl max-w-2xl overflow-x-auto scrollbar-none animate-in fade-in duration-150">
+          <span className="text-[11px] text-slate-400 font-medium px-2 whitespace-nowrap flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+            已摆放 ({placedItems.length}):
+          </span>
+          {placedItems.map((item) => {
+            const isSelected = selectedItem?.uid === item.uid;
+            return (
+              <button
+                key={item.uid}
+                onClick={() => handleSelectItem(item.group)}
+                className={`px-2.5 py-1 rounded-lg text-xs whitespace-nowrap transition-all flex items-center gap-1.5 ${
+                  isSelected
+                    ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white font-medium shadow-md shadow-cyan-500/20 ring-1 ring-cyan-400'
+                    : 'bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/60'
+                }`}
+                title="点击在 3D 场景中立即选中并调整"
+              >
+                <span>{item.userData?.name || '家具'}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* 右侧选中物体属性检查与微调面板 */}
       {viewMode === 'orbit' && selectedItem && (
         <InspectorPanel

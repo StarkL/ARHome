@@ -571,5 +571,17 @@ export function buildFurnitureModel(item, customColor) {
     }
   }
 
+  // 添加隐形物理射线拾取盒 (确保点击家具任何细小部件、中空死角都能 100% 灵敏命中选中)
+  const hitW = (item.dimensionsMm?.width || 1000) / 1000;
+  const hitD = (item.dimensionsMm?.length || 1000) / 1000;
+  const hitH = (item.dimensionsMm?.height || 800) / 1000;
+  const hitGeom = new THREE.BoxGeometry(hitW * 1.05, hitH * 1.05, hitD * 1.05);
+  const hitMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
+  const hitMesh = new THREE.Mesh(hitGeom, hitMat);
+  hitMesh.name = 'furniture-hitbox';
+  hitMesh.position.set(0, (hitH * 1.05) / 2, 0);
+  hitMesh.userData = { isHitBox: true };
+  group.add(hitMesh);
+
   return group;
 }
