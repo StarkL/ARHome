@@ -235,8 +235,11 @@ export function FloorPlanImportModal({
     if (activeTab === 'presets') {
       const preset = PRESET_BLUEPRINTS.find(p => p.id === selectedPresetId);
       if (!preset) return;
-      // 预生成 CAD 高清图纸作为地面贴图
-      const cvs = renderBlueprintCanvas(preset, { width: 1024, height: 800 });
+      // 预生成 CAD 高清图纸作为地面贴图 (开启 forFloorOverlay: true，确保 1:1 无外边距、严格贴合)
+      const cvs = renderBlueprintCanvas(preset, { 
+        width: 1024, 
+        forFloorOverlay: true 
+      });
       finalPlan = {
         ...preset,
         blueprintCanvas: showOverlayOnFloor ? cvs : null,

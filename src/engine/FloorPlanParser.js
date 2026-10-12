@@ -135,23 +135,36 @@ export const PRESET_BLUEPRINTS = [
  * 动态渲染 CAD 风格的高清户型施工图纸 Canvas (用于预览与 3D 地面投影)
  */
 export function renderBlueprintCanvas(blueprint, options = {}) {
+  const isFloorOverlay = !!options.forFloorOverlay;
+  const boundW = blueprint.targetWidthMeters;
+  const boundD = blueprint.targetDepthMeters;
+
+  // 1:1 3D 地面投影模式下，贴图尺寸严格按开间进深比例渲染，绝无外边距失真
   const width = options.width || 1024;
-  const height = options.height || 800;
+  const height = isFloorOverlay 
+    ? Math.round(width * (boundD / boundW))
+    : (options.height || 800);
+
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d');
 
-  const padding = 70;
+  // 关键：3D 地面投影使用 0 边距，坐标按比例完美映射 [ -boundW/2, +boundW/2 ] 到 [ 0, width ]
+  const padding = isFloorOverlay ? 0 : (options.padding !== undefined ? options.padding : 70);
   const drawW = width - padding * 2;
   const drawH = height - padding * 2;
 
-  // 计算三维世界坐标到 Canvas 像素的映射缩放与居中
-  const boundW = blueprint.targetWidthMeters;
-  const boundD = blueprint.targetDepthMeters;
-  const scale = Math.min(drawW / boundW, drawH / boundD);
+  const scale = isFloorOverlay 
+    ? (width / boundW) 
+    : Math.min(drawW / boundW, drawH / boundD);
 
   const worldToCanvas = (x, z) => {
+    if (isFloorOverlay) {
+      const cx = (x + boundW / 2) / boundW * width;
+      const cy = (z + boundD / 2) / boundD * height;
+      return [cx, cy];
+    }
     const cx = width / 2 + x * scale;
     const cy = height / 2 + z * scale;
     return [cx, cy];
@@ -287,20 +300,22 @@ export function renderBlueprintCanvas(blueprint, options = {}) {
     });
   }
 
-  // 5. 绘制 CAD 外部尺寸标注线 (Dimension Lines)
-  drawDimensionLine(ctx, padding, height - 30, width - padding, height - 30, `${blueprint.targetWidthMeters} m`, isDarkBlueprint);
-  drawDimensionLine(ctx, width - 30, padding, width - 30, height - padding, `${blueprint.targetDepthMeters} m`, isDarkBlueprint, true);
+  // 5. 绘制 CAD 外部尺寸标注线与图签章 (仅在 2D 预览与下载图纸时绘制，3D 地面投影时忽略，确保绝对对齐且保持室内纯净)
+  if (!isFloorOverlay) {
+    drawDimensionLine(ctx, padding, height - 30, width - padding, height - 30, `${blueprint.targetWidthMeters} m`, isDarkBlueprint);
+    drawDimensionLine(ctx, width - 30, padding, width - 30, height - padding, `${blueprint.targetDepthMeters} m`, isDarkBlueprint, true);
 
-  // 6. 图纸信息印章 (Title Block Stamp)
-  ctx.save();
-  ctx.strokeStyle = isDarkBlueprint ? '#334155' : '#cbd5e1';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(padding, padding - 45, 260, 36);
-  ctx.fillStyle = isDarkBlueprint ? '#94a3b8' : '#475569';
-  ctx.font = '12px sans-serif';
-  ctx.textAlign = 'left';
-  ctx.fillText(`📐 1:1 施工放线图纸 | ${blueprint.name}`, padding + 10, padding - 22);
-  ctx.restore();
+    // 6. 图纸信息印章 (Title Block Stamp)
+    ctx.save();
+    ctx.strokeStyle = isDarkBlueprint ? '#334155' : '#cbd5e1';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(padding, padding - 45, 260, 36);
+    ctx.fillStyle = isDarkBlueprint ? '#94a3b8' : '#475569';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`📐 1:1 施工放线图纸 | ${blueprint.name}`, padding + 10, padding - 22);
+    ctx.restore();
+  }
 
   return canvas;
 }
@@ -476,7 +491,18 @@ export async function parseFloorPlanImage(imageElement, options = {}) {
   ensureExteriorEnclosure(finalWalls, targetWidthMeters, targetDepthMeters);
 
   // 生成地面高清晰度贴图 DataURL 供 3D 地板对照
-  const overlayDataUrl = canvas.toDataURL('image/png');
+  // 关键：裁剪出 [minPX, minPY, blueprintPixelWidth, blueprintPixelHeight] 真实房间区域，
+  // 消除外围空白边距，使贴图 UV 与三维墙体物理空间完全 1:1 严丝合缝
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width = blueprintPixelWidth;
+  cropCanvas.height = blueprintPixelHeight;
+  const cropCtx = cropCanvas.getContext('2d');
+  cropCtx.drawImage(
+    canvas,
+    minPX, minPY, blueprintPixelWidth, blueprintPixelHeight,
+    0, 0, blueprintPixelWidth, blueprintPixelHeight
+  );
+  const overlayDataUrl = cropCanvas.toDataURL('image/png');
 
   return {
     id: `custom-parsed-${Date.now()}`,
